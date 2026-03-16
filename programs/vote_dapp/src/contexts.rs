@@ -55,3 +55,49 @@ pub struct InitializeTreasury<'info> {
 
     pub system_program: Program<'info, System>,
 }
+
+
+#[derive(Accounts)]
+pub struct PurchaseTokens<'info> {
+    #[account(mut)]
+    pub buyer: Signer<'info>,
+
+    /// CHECK: This account receives SOL from the user
+    #[account(
+        mut,
+        seeds = [b"sol-vault"],
+        bump = treasury_config_account.bump
+    )]
+    pub sol_vault: AccountInfo<'info>,
+
+    #[account(mut)]
+    pub treasury_token_account: Account<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        constraint = buyer_token_account.owner == buyer.key(),
+        constraint = buyer_token_account.mint == x_mint.key()
+    )]
+    pub buyer_token_account: Account<'info, TokenAccount>,
+
+    
+    #[account(mut)]
+    pub x_mint: Account<'info, Mint>,
+
+    /// CHECK: PDA is only used as mint authority signer via seeds and bump.
+    #[account(
+        seeds = [b"mint-authority"],
+        bump
+    )]
+    pub mint_authority: AccountInfo<'info>,
+
+    #[account(
+        seeds = [b"treasury-config"],
+        bump,
+        constraint = treasury_config_account.x_mint == x_mint.key()
+    )]
+    pub treasury_config_account: Account<'info, TreasuryConfig>,
+
+    pub token_program: Program<'info, Token>,
+    pub system_program: Program<'info, System>,
+}
