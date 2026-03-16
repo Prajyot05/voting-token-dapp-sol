@@ -9,8 +9,11 @@ const SEEDS = {
   TREASURY_CONFIG: "treasury-config",
   SOL_VAULT: "sol-vault",
   X_MINT: "x-mint",
-  MINT_AUTHORITY: "mint-authority"
+  MINT_AUTHORITY: "mint-authority",
+  VOTER: "voter"
 };
+
+const PROPOSAL_ID = 1;
 
 const findPDA = (programId: anchor.web3.PublicKey, seeds: (Buffer | Uint8Array)[]): anchor.web3.PublicKey => {
   const [pda, bump] = anchor.web3.PublicKey.findProgramAddressSync(seeds, programId);
@@ -38,10 +41,12 @@ describe("vote_dapp", () => {
   const adminWallet = (program.provider.wallet as NodeWallet).payer;
 
   let proposalCreatorWallet = anchor.web3.Keypair.generate();
+  let voterWallet = anchor.web3.Keypair.generate();
   let proposalCreatorTokenAccount: anchor.web3.PublicKey;
 
   let treasuryConfigPDA: anchor.web3.PublicKey;
   let xMintPDA: anchor.web3.PublicKey;
+  let voterPDA: anchor.web3.PublicKey;
   let solVaultPDA: anchor.web3.PublicKey;
   let minAuthorityPDA: anchor.web3.PublicKey;
 
@@ -50,12 +55,17 @@ describe("vote_dapp", () => {
   beforeEach(async () => {
     treasuryConfigPDA = findPDA(program.programId, [Buffer.from(SEEDS.TREASURY_CONFIG)]);
     xMintPDA = findPDA(program.programId, [Buffer.from(SEEDS.X_MINT)]);
+    voterPDA = findPDA(program.programId, [Buffer.from(SEEDS.VOTER), voterWallet.publicKey.toBuffer()]);
     solVaultPDA = findPDA(program.programId, [Buffer.from(SEEDS.SOL_VAULT)]);
     minAuthorityPDA = findPDA(program.programId, [Buffer.from(SEEDS.MINT_AUTHORITY)]);
 
     console.log("Airdropping SOL to Proposal Creator...");
     await airDropSol(connection, proposalCreatorWallet.publicKey, 10 * anchor.web3.LAMPORTS_PER_SOL);
     console.log("Proposal Creator SOL Balance:", (await connection.getBalance(proposalCreatorWallet.publicKey)) / anchor.web3.LAMPORTS_PER_SOL, "SOL");
+
+    console.log("Airdropping SOL to Voter...");
+    await airDropSol(connection, voterWallet.publicKey, 10 * anchor.web3.LAMPORTS_PER_SOL);
+    console.log("Voter SOL Balance:", (await connection.getBalance(voterWallet.publicKey)) / anchor.web3.LAMPORTS_PER_SOL, "SOL");
   });
 
   const createTokenAccounts = async () => {
@@ -116,5 +126,20 @@ describe("vote_dapp", () => {
       // Assertions
       expect(tokenBalanceAfter.value.uiAmount).to.be.greaterThan(tokenBalanceBefore.value.uiAmount);
     });
-  })
+  });
+
+  describe("3. Register Voter", () => {
+    it("Registers a voter!", async () => {
+      await program.methods.registerVoter().accounts({
+        authority: voterWallet.publicKey,
+      }).signers([voterWallet]).rpc();
+
+      // Fetch the voter account to verify
+      const voterAccount = await program.account.voter.fetch(findPDA(program.programId, [Buffer.from("voter"), voterWallet.publicKey.toBuffer()]));
+      console.log("Voter Account:", voterAccount);
+
+      // Assertions
+      expect(voterAccount.voterId.toBase58()).to.be.equal(voterWallet.publicKey.toBase58());
+    });
+  });
 });

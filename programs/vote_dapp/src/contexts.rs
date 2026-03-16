@@ -1,5 +1,5 @@
 use anchor_lang::prelude::*;
-use crate::states::TreasuryConfig;
+use crate::states::{TreasuryConfig, Voter};
 use anchor_spl::{associated_token::AssociatedToken, token::{Mint, Token, TokenAccount}};
 
 #[derive(Accounts)]
@@ -99,5 +99,22 @@ pub struct PurchaseTokens<'info> {
     pub treasury_config_account: Account<'info, TreasuryConfig>,
 
     pub token_program: Program<'info, Token>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct RegisterVoter<'info> {
+    #[account(mut)]
+    pub authority: Signer<'info>,
+
+    #[account(
+        init,
+        payer = authority,
+        space = 8 + Voter::INIT_SPACE,
+        seeds = [b"voter", authority.key().as_ref()],
+        bump
+    )]
+    pub voter_account: Account<'info, Voter>,
+
     pub system_program: Program<'info, System>,
 }
