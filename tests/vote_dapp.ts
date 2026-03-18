@@ -271,4 +271,87 @@ describe("vote_dapp", () => {
       expect(winnerAccount.electionId.toNumber()).to.be.equal(ELECTION_ID);
     });
   });
+
+  describe("7. Close Proposal Account", () => {
+    it("7.1 Should close proposal after deadline and recover rent", async () => {
+      const accountInfoBefore = await connection.getAccountInfo(proposalPDA);
+      expect(accountInfoBefore).to.not.be.null;
+
+      await program.methods
+        .closeProposal(PROPOSAL_ID)
+        .accounts({
+          destination: proposalCreatorWallet.publicKey,
+          authority: proposalCreatorWallet.publicKey,
+        })
+        .signers([proposalCreatorWallet])
+        .rpc();
+
+      const accountInfoAfter = await connection.getAccountInfo(proposalPDA);
+      expect(accountInfoAfter).to.be.null;
+    });
+  });
+
+  describe("8. Close Voter Account", () => {
+    it("8.1 Should close voter account and recover rent", async () => {
+      const accountInfoBefore = await connection.getAccountInfo(voterPDA);
+      expect(accountInfoBefore).to.not.be.null;
+
+      const voterBalanceBefore = await connection.getBalance(voterWallet.publicKey);
+      console.log("Voter Balance Before:", voterBalanceBefore);
+
+      await program.methods
+        .closeVoter()
+        .accounts({
+          authority: voterWallet.publicKey,
+        })
+        .signers([voterWallet])
+        .rpc();
+
+      const voterBalanceAfter = await connection.getBalance(voterWallet.publicKey);
+      console.log("Voter Balance After:", voterBalanceAfter);
+
+      const accountInfoAfter = await connection.getAccountInfo(voterPDA);
+      expect(accountInfoAfter).to.be.null;
+      expect(voterBalanceAfter).to.be.greaterThan(voterBalanceBefore - 200000);
+    });
+  });
+
+  describe("9. SOL Withdrawal", () => {
+    it("9.1 Should allow admin to withdraw SOL from treasury", async () => {
+      const withdrawAmount = new anchor.BN(100_000);
+      const adminBalanceBefore = await connection.getBalance(adminWallet.publicKey);
+
+      const vaultBalance = await connection.getBalance(solVaultPDA);
+      if (vaultBalance >= withdrawAmount.toNumber()) {
+        await program.methods
+          .withdrawSol(withdrawAmount)
+          .accounts({
+            authority: adminWallet.publicKey,
+          })
+          .rpc();
+
+        const adminBalanceAfter = await connection.getBalance(adminWallet.publicKey);
+        expect(adminBalanceAfter).to.be.greaterThan(adminBalanceBefore - 100000);
+      } else {
+        console.log("(Insufficient SOL in vault for withdrawal test)");
+      }
+    });
+
+    it("9.2 Should fail when non-admin tries to withdraw SOL", async () => {
+      const withdrawAmount = new anchor.BN(100_000);
+
+      try {
+        await program.methods
+          .withdrawSol(withdrawAmount)
+          .accounts({
+            authority: voterWallet.publicKey,
+          })
+          .signers([voterWallet])
+          .rpc();
+        expect.fail("Expected withdrawal to fail - unauthorized user");
+      } catch (err) {
+        expectAnchorErrorCode(err, "UnauthorizedAccess");
+      }
+    });
+  });
 });

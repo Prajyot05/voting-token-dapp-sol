@@ -1,11 +1,13 @@
 use anchor_lang::prelude::*;
 mod contexts;
 mod errors;
+mod events;
 mod states;
 
 use anchor_lang::system_program;
 use contexts::*;
 use errors::*;
+use events::*;
 
 declare_id!("3Qs3YBv9mw656z56RKSJa2MLznZKrpiRgvME33TopxYi");
 
@@ -36,6 +38,20 @@ pub mod vote_dapp {
         let election_round_account = &mut ctx.accounts.election_round_account;
         election_round_account.authority = ctx.accounts.authority.key();
         election_round_account.election_id = 1;
+
+        let clock = Clock::get()?;
+        emit!(TreasuryInitialized {
+            authority: ctx.accounts.authority.key(),
+            x_mint: ctx.accounts.x_mint.key(),
+            sol_price,
+            tokens_per_purchase,
+            timestamp: clock.unix_timestamp,
+        });
+
+        emit!(ProposalCounterInitialized {
+            authority: ctx.accounts.authority.key(),
+            timestamp: clock.unix_timestamp,
+        });
 
         Ok(())
     }
@@ -73,6 +89,14 @@ pub mod vote_dapp {
             signer_seeds,
         );
         anchor_spl::token::mint_to(cpi_ctx, token_amount)?;
+
+        emit!(TokensPurchased {
+            buyer: ctx.accounts.buyer.key(),
+            sol_paid: sol,
+            tokens_received: token_amount,
+            timestamp: Clock::get()?.unix_timestamp,
+        });
+
         Ok(())
     }
 
@@ -81,6 +105,13 @@ pub mod vote_dapp {
         voter_account.voter_id = ctx.accounts.authority.key();
         voter_account.current_election_id = 0; // Will be set on first vote
         voter_account.proposal_voted = 0; // No vote yet
+
+        emit!(VoterRegistered {
+            voter: ctx.accounts.authority.key(),
+            voter_account: ctx.accounts.voter_account.key(),
+            timestamp: Clock::get()?.unix_timestamp,
+        });
+
         Ok(())
     }
 
@@ -108,6 +139,8 @@ pub mod vote_dapp {
         let cpi_ctx = CpiContext::new(ctx.accounts.token_program.to_account_info(), cpi_accounts);
         anchor_spl::token::transfer(cpi_ctx, token_amount)?;
 
+        let proposal_info_clone = proposal_info.clone();
+
         proposal_account.authority = ctx.accounts.authority.key();
         proposal_account.proposal_info = proposal_info;
         proposal_account.deadline = deadline;
@@ -118,6 +151,15 @@ pub mod vote_dapp {
             .proposal_count
             .checked_add(1)
             .ok_or(VoteDappError::ProposalCounterOverflow)?;
+
+        emit!(ProposalCreated {
+            proposal_id: proposal_account.proposal_id,
+            creator: ctx.accounts.authority.key(),
+            proposal_info: proposal_info_clone,
+            deadline,
+            timestamp: clock.unix_timestamp,
+        });
+
         Ok(())
     }
 
@@ -169,6 +211,13 @@ pub mod vote_dapp {
             election_result.number_of_votes = proposal_account.number_of_votes;
         }
 
+        emit!(VoteCast {
+            voter: ctx.accounts.authority.key(),
+            proposal_id,
+            total_votes: proposal_account.number_of_votes,
+            timestamp: clock.unix_timestamp,
+        });
+
         Ok(())
     }
 
@@ -197,6 +246,72 @@ pub mod vote_dapp {
         winner.number_of_votes = election_result.number_of_votes;
         winner.proposal_info = proposal.proposal_info.clone();
         winner.declared_at = clock.unix_timestamp;
+
+        emit!(WinnerDeclared {
+            winning_proposal_id: election_result.winning_proposal_id,
+            proposal_info: proposal.proposal_info.clone(),
+            total_votes: election_result.number_of_votes,
+            declared_by: ctx.accounts.authority.key(),
+            timestamp: clock.unix_timestamp,
+        });
+
+        Ok(())
+    }
+
+    pub fn close_proposal(ctx: Context<CloseProposal>, proposal_id: u8) -> Result<()> {
+        let clock = Clock::get()?;
+        let proposal = &ctx.accounts.proposal_account;
+
+        require!(
+            clock.unix_timestamp >= proposal.deadline,
+            VoteDappError::VotingStillActive
+        );
+
+        emit!(ProposalClosed {
+            proposal_id,
+            rent_recovered: ctx.accounts.proposal_account.to_account_info().lamports(),
+            recovered_to: ctx.accounts.destination.key(),
+            timestamp: clock.unix_timestamp,
+        });
+
+        Ok(())
+    }
+
+    pub fn close_voter(ctx: Context<CloseVoter>) -> Result<()> {
+        emit!(VoterAccountClosed {
+            voter: ctx.accounts.voter_account.voter_id,
+            rent_recovered_to: ctx.accounts.authority.key(),
+            timestamp: Clock::get()?.unix_timestamp,
+        });
+
+        Ok(())
+    }
+
+    pub fn withdraw_sol(ctx: Context<WithdrawSol>, amount: u64) -> Result<()> {
+        let treasury_config = &ctx.accounts.treasury_config_account;
+
+        let sol_vault_seeds = &[b"sol-vault".as_ref(), &[treasury_config.bump]];
+        let signer_seeds = &[&sol_vault_seeds[..]];
+
+        let transfer_ix = system_program::Transfer {
+            from: ctx.accounts.sol_vault.to_account_info(),
+            to: ctx.accounts.authority.to_account_info(),
+        };
+
+        system_program::transfer(
+            CpiContext::new_with_signer(
+                ctx.accounts.system_program.to_account_info(),
+                transfer_ix,
+                signer_seeds,
+            ),
+            amount,
+        )?;
+
+        emit!(SolWithdrawn {
+            authority: ctx.accounts.authority.key(),
+            amount,
+            timestamp: Clock::get()?.unix_timestamp,
+        });
 
         Ok(())
     }

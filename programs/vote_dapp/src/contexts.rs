@@ -266,3 +266,60 @@ pub struct PickWinner<'info> {
 
     pub system_program: Program<'info, System>,
 }
+
+#[derive(Accounts)]
+#[instruction(proposal_id: u8)]
+pub struct CloseProposal<'info> {
+    #[account(
+        mut,
+        seeds = [b"proposal", proposal_id.to_le_bytes().as_ref()],
+        bump,
+        close = destination,
+        constraint = proposal_account.authority == authority.key() @ VoteDappError::UnauthorizedAccess
+    )]
+    pub proposal_account: Account<'info, Proposal>,
+
+    /// CHECK: This account only receives lamports from account closure.
+    #[account(mut)]
+    pub destination: AccountInfo<'info>,
+
+    #[account(mut)]
+    pub authority: Signer<'info>,
+}
+
+#[derive(Accounts)]
+pub struct CloseVoter<'info> {
+    #[account(
+        mut,
+        seeds = [b"voter", authority.key().as_ref()],
+        bump,
+        close = authority
+    )]
+    pub voter_account: Account<'info, Voter>,
+
+    #[account(mut)]
+    pub authority: Signer<'info>,
+}
+
+#[derive(Accounts)]
+pub struct WithdrawSol<'info> {
+    #[account(
+        seeds = [b"treasury-config"],
+        bump,
+        constraint = treasury_config_account.authority == authority.key() @ VoteDappError::UnauthorizedAccess
+    )]
+    pub treasury_config_account: Account<'info, TreasuryConfig>,
+
+    /// CHECK: PDA that holds SOL. Validated by seeds and bump.
+    #[account(
+        mut,
+        seeds = [b"sol-vault"],
+        bump = treasury_config_account.bump
+    )]
+    pub sol_vault: AccountInfo<'info>,
+
+    #[account(mut)]
+    pub authority: Signer<'info>,
+
+    pub system_program: Program<'info, System>,
+}

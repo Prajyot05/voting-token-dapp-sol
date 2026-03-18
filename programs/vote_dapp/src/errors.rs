@@ -29,5 +29,14 @@ pub enum VoteDappError {
     VotingStillActive,
 
     #[msg("No votes have been cast. Cannot pick winner.")]
-    NoVotesCast
+    NoVotesCast,
+
+    #[msg("You are not authorized to perform this action")]
+    UnauthorizedAccess,
+
+    #[msg("Token account is not owned by the expected wallet")]
+    InvalidTokenAccountOwner,
+
+    #[msg("Provided mint account is invalid")]
+    InvalidMint,
 }
