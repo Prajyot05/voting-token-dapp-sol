@@ -39,4 +39,16 @@ pub enum VoteDappError {
 
     #[msg("Provided mint account is invalid")]
     InvalidMint,
+
+    #[msg("Treasury configuration values must be non-zero")]
+    InvalidTreasuryConfig,
+
+    #[msg("Proposal description cannot be empty")]
+    EmptyProposalInfo,
+
+    #[msg("Amount must be greater than zero")]
+    InvalidAmount,
+
+    #[msg("Insufficient SOL in vault for withdrawal")]
+    InsufficientVaultBalance,
 }

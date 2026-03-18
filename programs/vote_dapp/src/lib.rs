@@ -11,6 +11,9 @@ use events::*;
 
 declare_id!("3Qs3YBv9mw656z56RKSJa2MLznZKrpiRgvME33TopxYi");
 
+const MIN_NON_ZERO_AMOUNT: u64 = 1;
+const MIN_DEADLINE_OFFSET_SECONDS: i64 = 1;
+
 #[program]
 pub mod vote_dapp {
     use super::*;
@@ -20,6 +23,11 @@ pub mod vote_dapp {
         sol_price: u64,
         tokens_per_purchase: u64,
     ) -> Result<()> {
+        require!(
+            sol_price >= MIN_NON_ZERO_AMOUNT && tokens_per_purchase >= MIN_NON_ZERO_AMOUNT,
+            VoteDappError::InvalidTreasuryConfig
+        );
+
         let treasury_config_account = &mut ctx.accounts.treasury_config_account;
         treasury_config_account.authority = ctx.accounts.authority.key();
         treasury_config_account.bump = ctx.bumps.sol_vault;
@@ -122,10 +130,12 @@ pub mod vote_dapp {
         token_amount: u64,
     ) -> Result<()> {
         let clock = Clock::get()?;
+        require!(!proposal_info.trim().is_empty(), VoteDappError::EmptyProposalInfo);
         require!(
-            clock.unix_timestamp < deadline,
+            deadline > clock.unix_timestamp + MIN_DEADLINE_OFFSET_SECONDS,
             VoteDappError::InvalidDeadline
         );
+        require!(token_amount >= MIN_NON_ZERO_AMOUNT, VoteDappError::InvalidAmount);
 
         let proposal_account = &mut ctx.accounts.proposal_account;
 
@@ -165,6 +175,7 @@ pub mod vote_dapp {
 
     pub fn proposal_to_vote(ctx: Context<Vote>, proposal_id: u8, token_amount: u64) -> Result<()> {
         let clock = Clock::get()?;
+        require!(token_amount >= MIN_NON_ZERO_AMOUNT, VoteDappError::InvalidAmount);
         let proposal_account = &mut ctx.accounts.proposal_account;
         require!(
             clock.unix_timestamp < proposal_account.deadline,
@@ -288,7 +299,12 @@ pub mod vote_dapp {
     }
 
     pub fn withdraw_sol(ctx: Context<WithdrawSol>, amount: u64) -> Result<()> {
+        require!(amount >= MIN_NON_ZERO_AMOUNT, VoteDappError::InvalidAmount);
         let treasury_config = &ctx.accounts.treasury_config_account;
+        require!(
+            ctx.accounts.sol_vault.to_account_info().lamports() >= amount,
+            VoteDappError::InsufficientVaultBalance
+        );
 
         let sol_vault_seeds = &[b"sol-vault".as_ref(), &[treasury_config.bump]];
         let signer_seeds = &[&sol_vault_seeds[..]];
