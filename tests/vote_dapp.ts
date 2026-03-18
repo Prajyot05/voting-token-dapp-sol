@@ -13,9 +13,13 @@ const SEEDS = {
   VOTER: "voter",
   PROPOSAL: "proposal",
   PROPOSAL_COUNTER: "proposal-counter",
+  ELECTION_ROUND: "election-round",
+  ELECTION_RESULT: "election-result",
+  WINNER: "winner",
 };
 
 const PROPOSAL_ID = 1;
+const ELECTION_ID = 1;
 
 const findPDA = (programId: anchor.web3.PublicKey, seeds: (Buffer | Uint8Array)[]): anchor.web3.PublicKey => {
   const [pda, bump] = anchor.web3.PublicKey.findProgramAddressSync(seeds, programId);
@@ -44,6 +48,15 @@ const getBlockTime = async (connection: anchor.web3.Connection): Promise<number>
   return blockTime;
 };
 
+const expectAnchorErrorCode = (err: unknown, expectedCode: string) => {
+  const anyErr = err as any;
+  const actualCode =
+    anyErr?.error?.errorCode?.code ??
+    anyErr?.errorCode?.code ??
+    anyErr?.code;
+  expect(actualCode).to.equal(expectedCode);
+};
+
 describe("vote_dapp", () => {
   const provider = anchor.AnchorProvider.env();
   const connection = provider.connection;
@@ -64,6 +77,9 @@ describe("vote_dapp", () => {
   let minAuthorityPDA: anchor.web3.PublicKey;
   let proposalPDA: anchor.web3.PublicKey;
   let proposalCounterPDA: anchor.web3.PublicKey;
+  let electionRoundPDA: anchor.web3.PublicKey;
+  let electionResultPDA: anchor.web3.PublicKey;
+  let winnerPDA: anchor.web3.PublicKey;
 
   let treasuryTokenAccount: anchor.web3.PublicKey;
 
@@ -73,9 +89,11 @@ describe("vote_dapp", () => {
     voterPDA = findPDA(program.programId, [Buffer.from(SEEDS.VOTER), voterWallet.publicKey.toBuffer()]);
     solVaultPDA = findPDA(program.programId, [Buffer.from(SEEDS.SOL_VAULT)]);
     minAuthorityPDA = findPDA(program.programId, [Buffer.from(SEEDS.MINT_AUTHORITY)]);
-    // On-chain seed uses ProposalCounter.proposal_count (u8), so this seed must be 1 byte.
     proposalPDA = findPDA(program.programId, [Buffer.from(SEEDS.PROPOSAL), Buffer.from([PROPOSAL_ID])]);
     proposalCounterPDA = findPDA(program.programId, [Buffer.from(SEEDS.PROPOSAL_COUNTER)]);
+    electionRoundPDA = findPDA(program.programId, [Buffer.from(SEEDS.ELECTION_ROUND)]);
+    electionResultPDA = findPDA(program.programId, [Buffer.from(SEEDS.ELECTION_RESULT), Buffer.from(new anchor.BN(ELECTION_ID).toArray("le", 8))]);
+    winnerPDA = findPDA(program.programId, [Buffer.from(SEEDS.WINNER), Buffer.from(new anchor.BN(ELECTION_ID).toArray("le", 8))]);
 
     console.log("Airdropping SOL...");
     await Promise.all([
@@ -111,21 +129,18 @@ describe("vote_dapp", () => {
 
   describe("1. Initialize", () => {
     it("Initializes Treasury!", async () => {
-      const solPrice = new anchor.BN(1000_000_000); // 1 SOL = 1000 USDC (6 decimals)
-      const tokensPerPurchase = new anchor.BN(1000_000_000); // 100 xTokens per purchase
+      const solPrice = new anchor.BN(1000_000_000);
+      const tokensPerPurchase = new anchor.BN(1000_000_000);
 
-      // Here only the address is generated, the account is not created on-chain until the instruction is executed. So we can log the PDAs before the transaction to verify they are derived correctly.
       console.log("Treasury Config PDA:", treasuryConfigPDA.toBase58());
 
       await program.methods.initializeTreasury(solPrice, tokensPerPurchase).accounts({
         authority: adminWallet.publicKey,
       }).rpc();
 
-      // Now those addresses are now actual accounts on the blockchain, we can fetch them to verify their data.
       const treasuryConfigAccount = await program.account.treasuryConfig.fetch(treasuryConfigPDA);
       console.log("Treasury Config Account:", treasuryConfigAccount);
 
-      // Assertions
       expect(treasuryConfigAccount.authority.toBase58()).to.be.equal(adminWallet.publicKey.toBase58());
       expect(treasuryConfigAccount.solPrice.toString()).to.be.equal(solPrice.toString());
       expect(treasuryConfigAccount.tokensPerPurchase.toString()).to.be.equal(tokensPerPurchase.toString());
@@ -147,7 +162,6 @@ describe("vote_dapp", () => {
       const tokenBalanceAfter = await connection.getTokenAccountBalance(proposalCreatorTokenAccount);
       console.log("Proposal Creator Token Balance After:", tokenBalanceAfter.value.uiAmount);
 
-      // Assertions
       expect(tokenBalanceAfter.value.uiAmount).to.be.greaterThan(tokenBalanceBefore.value.uiAmount);
     });
 
@@ -163,7 +177,6 @@ describe("vote_dapp", () => {
       const tokenBalanceAfter = await connection.getTokenAccountBalance(voterTokenAccount);
       console.log("Voter Token Balance After:", tokenBalanceAfter.value.uiAmount);
 
-      // Assertions
       expect(tokenBalanceAfter.value.uiAmount).to.be.greaterThan(tokenBalanceBefore.value.uiAmount);
     });
   });
@@ -174,11 +187,9 @@ describe("vote_dapp", () => {
         authority: voterWallet.publicKey,
       }).signers([voterWallet]).rpc();
 
-      // Fetch the voter account to verify
       const voterAccount = await program.account.voter.fetch(findPDA(program.programId, [Buffer.from("voter"), voterWallet.publicKey.toBuffer()]));
       console.log("Voter Account:", voterAccount);
 
-      // Assertions
       expect(voterAccount.voterId.toBase58()).to.be.equal(voterWallet.publicKey.toBase58());
     });
   });
@@ -187,8 +198,8 @@ describe("vote_dapp", () => {
     it("Registers a proposal!", async () => {
       const currentBlockTime = await getBlockTime(connection);
       const proposalInfo = "Proposal 1: Increase Budget for Project X";
-      const deadline = new anchor.BN(currentBlockTime).add(new anchor.BN(10)); // Deadline set to 10 seconds from now
-      const stakeAmount = new anchor.BN(1000); // Stake 1000 tokens to create proposal
+      const deadline = new anchor.BN(currentBlockTime).add(new anchor.BN(10));
+      const stakeAmount = new anchor.BN(1000);
 
       await program.methods.registerProposal(proposalInfo, deadline, stakeAmount).accounts({
         authority: proposalCreatorWallet.publicKey,
@@ -198,36 +209,66 @@ describe("vote_dapp", () => {
         treasuryTokenAccount: treasuryTokenAccount,
       }).signers([proposalCreatorWallet]).rpc();
 
-      // Fetch the proposal account to verify
       const proposalAccount = await program.account.proposal.fetch(proposalPDA);
       console.log("Proposal Account:", proposalAccount);
 
-      // Assertions
       expect(proposalAccount.proposalInfo).to.be.equal(proposalInfo);
       expect(proposalAccount.deadline.toNumber()).to.be.equal(deadline.toNumber());
       expect(proposalAccount.authority.toBase58()).to.be.equal(proposalCreatorWallet.publicKey.toBase58());
-      expect(proposalAccount.proposalId).to.be.equal(1); // First proposal should have ID 1
-      expect(proposalAccount.numberOfVotes).to.be.equal(0); // No votes yet
+      expect(proposalAccount.proposalId).to.be.equal(1);
+      expect(proposalAccount.numberOfVotes).to.be.equal(0);
     });
   });
 
   describe("5. Vote on Proposal", () => {
     it("Votes on a proposal!", async () => {
-      const tokenAmount = new anchor.BN(100); // Stake 100 tokens to vote
+      const tokenAmount = new anchor.BN(100);
 
       await program.methods.proposalToVote(PROPOSAL_ID, tokenAmount).accounts({
-        voterTokenAccount: voterTokenAccount, // Using proposal creator's token account for voting in this test
+        voterTokenAccount: voterTokenAccount,
         xMint: xMintPDA,
         treasuryTokenAccount: treasuryTokenAccount,
         authority: voterWallet.publicKey,
       }).signers([voterWallet]).rpc();
 
-      // Fetch the proposal account to verify the vote count
       const proposalAccount = await program.account.proposal.fetch(proposalPDA);
       console.log("Proposal Account After Vote:", proposalAccount); 
 
-      // Assertions
-      expect(proposalAccount.numberOfVotes).to.be.equal(1); // Should have 1 vote now
+      expect(proposalAccount.numberOfVotes).to.be.equal(1);
+    });
+  });
+
+  describe("6. Pick Winner", () => {
+    it("6.1 Fails to pick a winner before deadline passes!", async () => {
+      try{
+        await program.methods
+          .pickWinner(PROPOSAL_ID)
+          .accounts({
+            authority: adminWallet.publicKey,
+          })
+          .rpc();
+      }catch(error){
+       expectAnchorErrorCode(error,"VotingStillActive")
+      }
+    });
+
+    it("6.2 Picks a winner after deadline!", async () => {
+      await new Promise(resolve => setTimeout(resolve, 11000));
+
+      await program.methods
+        .pickWinner(PROPOSAL_ID)
+        .accounts({
+          authority: adminWallet.publicKey,
+        })
+        .rpc();
+
+      const winnerAccount = await program.account.winner.fetch(winnerPDA);
+      console.log("Winner Account:", winnerAccount);
+
+      expect(winnerAccount.winningProposalId).to.be.equal(PROPOSAL_ID);
+      expect(winnerAccount.numberOfVotes).to.be.equal(1);
+      expect(winnerAccount.proposalInfo).to.be.equal("Proposal 1: Increase Budget for Project X");
+      expect(winnerAccount.electionId.toNumber()).to.be.equal(ELECTION_ID);
     });
   });
 });

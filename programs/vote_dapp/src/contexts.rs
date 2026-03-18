@@ -1,5 +1,5 @@
 use anchor_lang::prelude::*;
-use crate::{errors::VoteDappError, states::{Proposal, ProposalCounter, TreasuryConfig, Voter}};
+use crate::{errors::VoteDappError, states::{ElectionResult, ElectionRound, Proposal, ProposalCounter, TreasuryConfig, Voter, Winner}};
 use anchor_spl::{associated_token::AssociatedToken, token::{Mint, Token, TokenAccount}};
 
 #[derive(Accounts)]
@@ -27,6 +27,15 @@ pub struct InitializeTreasury<'info> {
 
     #[account(
         init,
+        space = 8 + ElectionRound::INIT_SPACE,
+        payer = authority,
+        seeds = [b"election-round"],
+        bump,
+    )]
+    pub election_round_account: Account<'info, ElectionRound>,
+
+    #[account(
+        init,
         payer = authority,
         mint::authority = mint_authority,
         mint::decimals = 6,
@@ -38,8 +47,8 @@ pub struct InitializeTreasury<'info> {
     #[account(
         init,
         payer = authority,
-        associated_token::mint = x_mint, // Which token is being sold
-        associated_token::authority = authority // Who owns this account
+        associated_token::mint = x_mint,
+        associated_token::authority = authority
     )]
     pub treasury_token_account: Account<'info, TokenAccount>,
 
@@ -75,7 +84,7 @@ pub struct PurchaseTokens<'info> {
     #[account(
         mut,
         seeds = [b"sol-vault"],
-        bump = treasury_config_account.bump
+        bump
     )]
     pub sol_vault: AccountInfo<'info>,
 
@@ -173,9 +182,10 @@ pub struct Vote<'info> {
 
     #[account(
         mut,
-        seeds =[b"voter",authority.key().as_ref()],bump,
+        seeds = [b"voter", authority.key().as_ref()],
+        bump,
         constraint = voter_account.proposal_voted == 0 @ VoteDappError::VoterAlreadyVoted
-     )]
+    )]
     pub voter_account: Account<'info, Voter>,
 
     pub x_mint: Account<'info, Mint>,
@@ -195,10 +205,64 @@ pub struct Vote<'info> {
    
     #[account(
         mut,
-        seeds =[b"proposal",proposal_id.to_be_bytes().as_ref()],
+        seeds = [b"proposal", proposal_id.to_le_bytes().as_ref()],
         bump
     )]
     pub proposal_account: Account<'info, Proposal>,
 
+    #[account(
+        seeds = [b"election-round"],
+        bump
+    )]
+    pub election_round_account: Account<'info, ElectionRound>,
+
+    #[account(
+        init_if_needed,
+        payer = authority,
+        space = 8 + ElectionResult::INIT_SPACE,
+        seeds = [b"election-result", election_round_account.election_id.to_le_bytes().as_ref()],
+        bump
+    )]
+    pub election_result_account: Account<'info, ElectionResult>,
+
     pub token_program: Program<'info, Token>,
+
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+#[instruction(proposal_id: u8)]
+pub struct PickWinner<'info> {
+    #[account(mut)]
+    pub authority: Signer<'info>,
+
+    #[account(
+        seeds = [b"election-round"],
+        bump
+    )]
+    pub election_round_account: Account<'info, ElectionRound>,
+
+    #[account(
+        init_if_needed,
+        payer = authority,
+        space = 8 + Winner::INIT_SPACE,
+        seeds = [b"winner", election_round_account.election_id.to_le_bytes().as_ref()],
+        bump
+    )]
+    pub winner_account: Account<'info, Winner>,
+
+    #[account(
+        mut,
+        seeds = [b"election-result", election_round_account.election_id.to_le_bytes().as_ref()],
+        bump
+    )]
+    pub election_result_account: Account<'info, ElectionResult>,
+
+    #[account(
+        seeds = [b"proposal", proposal_id.to_le_bytes().as_ref()],
+        bump
+    )]
+    pub proposal_account: Account<'info, Proposal>,
+
+    pub system_program: Program<'info, System>,
 }

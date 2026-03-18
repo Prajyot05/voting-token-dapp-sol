@@ -32,6 +32,11 @@ pub mod vote_dapp {
         );
         proposal_counter_account.proposal_count = 1;
         proposal_counter_account.authority = ctx.accounts.authority.key();
+
+        let election_round_account = &mut ctx.accounts.election_round_account;
+        election_round_account.authority = ctx.accounts.authority.key();
+        election_round_account.election_id = 1;
+
         Ok(())
     }
 
@@ -74,6 +79,8 @@ pub mod vote_dapp {
     pub fn register_voter(ctx: Context<RegisterVoter>) -> Result<()> {
         let voter_account = &mut ctx.accounts.voter_account;
         voter_account.voter_id = ctx.accounts.authority.key();
+        voter_account.current_election_id = 0; // Will be set on first vote
+        voter_account.proposal_voted = 0; // No vote yet
         Ok(())
     }
 
@@ -122,7 +129,7 @@ pub mod vote_dapp {
             VoteDappError::ProposalEnded
         );
 
-        // Transfer tokens from vote to treasury to ensure that the voter has a stake in the voting process.
+        // Transfer tokens from voter to treasury to ensure that the voter has a stake in the voting process.
         let cpi_accounts = anchor_spl::token::Transfer {
             from: ctx.accounts.voter_token_account.to_account_info(),
             to: ctx.accounts.treasury_token_account.to_account_info(),
@@ -137,11 +144,59 @@ pub mod vote_dapp {
             voter_account.proposal_voted == 0,
             VoteDappError::AlreadyVoted
         );
+
+        // Update voter account with current election info
+        let election_round = &ctx.accounts.election_round_account;
+        voter_account.current_election_id = election_round.election_id;
         voter_account.proposal_voted = proposal_id;
+
+        // Update proposal vote count
         proposal_account.number_of_votes = proposal_account
             .number_of_votes
             .checked_add(1)
             .ok_or(VoteDappError::ProposalVoteOverflow)?;
+
+        // Update election result with leading proposal
+        let election_result = &mut ctx.accounts.election_result_account;
+        if election_result.election_id == 0 {
+            // First time using this election result account
+            election_result.election_id = election_round.election_id;
+            election_result.winning_proposal_id = proposal_id;
+            election_result.number_of_votes = 1;
+        } else if proposal_account.number_of_votes > election_result.number_of_votes {
+            // New leading proposal
+            election_result.winning_proposal_id = proposal_id;
+            election_result.number_of_votes = proposal_account.number_of_votes;
+        }
+
+        Ok(())
+    }
+
+    pub fn pick_winner(ctx: Context<PickWinner>, _proposal_id: u8) -> Result<()> {
+        let clock = Clock::get()?;
+        let election_result = &ctx.accounts.election_result_account;
+        let proposal = &ctx.accounts.proposal_account;
+        let winner = &mut ctx.accounts.winner_account;
+        let election_round = &ctx.accounts.election_round_account;
+
+        // Ensure voting deadline has passed
+        require!(
+            clock.unix_timestamp > proposal.deadline,
+            VoteDappError::VotingStillActive
+        );
+
+        // Check if this proposal has any votes
+        require!(
+            proposal.number_of_votes > 0,
+            VoteDappError::NoVotesCast
+        );
+
+        // Finalize winner account from election result
+        winner.election_id = election_round.election_id;
+        winner.winning_proposal_id = election_result.winning_proposal_id;
+        winner.number_of_votes = election_result.number_of_votes;
+        winner.proposal_info = proposal.proposal_info.clone();
+        winner.declared_at = clock.unix_timestamp;
 
         Ok(())
     }

@@ -23,5 +23,11 @@ pub enum VoteDappError {
     VoterAlreadyVoted,
 
     #[msg("The token mint of the voter token account does not match the expected x_mint.")]
-    TokenMintMismatch
+    TokenMintMismatch,
+
+    #[msg("Voting is still active. Cannot pick winner yet.")]
+    VotingStillActive,
+
+    #[msg("No votes have been cast. Cannot pick winner.")]
+    NoVotesCast
 }
