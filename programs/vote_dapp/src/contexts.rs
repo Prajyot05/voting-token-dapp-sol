@@ -1,5 +1,5 @@
 use anchor_lang::prelude::*;
-use crate::states::{TreasuryConfig, Voter};
+use crate::{errors::VoteDappError, states::{Proposal, ProposalCounter, TreasuryConfig, Voter}};
 use anchor_spl::{associated_token::AssociatedToken, token::{Mint, Token, TokenAccount}};
 
 #[derive(Accounts)]
@@ -15,6 +15,15 @@ pub struct InitializeTreasury<'info> {
         bump
     )]
     pub treasury_config_account: Account<'info, TreasuryConfig>,
+
+    #[account(
+        init,
+        space = 8 + ProposalCounter::INIT_SPACE,
+        payer = authority,
+        seeds = [b"proposal-counter"],
+        bump,
+    )]
+    pub proposal_counter_account: Account<'info, ProposalCounter>,
 
     #[account(
         init,
@@ -117,4 +126,79 @@ pub struct RegisterVoter<'info> {
     pub voter_account: Account<'info, Voter>,
 
     pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct RegisterProposal<'info> {
+    #[account(mut)]
+    pub authority: Signer<'info>,
+
+    #[account(
+        init,
+        payer = authority,
+        space = 8 + Proposal::INIT_SPACE,
+        seeds = [b"proposal", proposal_counter_account.proposal_count.to_le_bytes().as_ref()],
+        bump
+    )]
+    pub proposal_account: Account<'info, Proposal>,
+
+    #[account(
+        mut,
+        constraint = proposal_token_account.mint == x_mint.key(),
+        constraint = proposal_token_account.owner == authority.key()
+    )]
+    pub proposal_token_account: Account<'info, TokenAccount>,
+
+    #[account(mut)]
+    pub proposal_counter_account: Account<'info, ProposalCounter>,
+
+    pub x_mint: Account<'info, Mint>,
+
+    #[account(
+        mut,
+        constraint = treasury_token_account.mint == x_mint.key()
+    )]
+    pub treasury_token_account: Account<'info, TokenAccount>,
+
+    pub token_program: Program<'info, Token>,
+
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+#[instruction(proposal_id: u8)]
+pub struct Vote<'info> {
+    #[account(mut)]
+    pub authority: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds =[b"voter",authority.key().as_ref()],bump,
+        constraint = voter_account.proposal_voted == 0 @ VoteDappError::VoterAlreadyVoted
+     )]
+    pub voter_account: Account<'info, Voter>,
+
+    pub x_mint: Account<'info, Mint>,
+
+    #[account(
+        mut,
+        constraint = voter_token_account.mint == x_mint.key() @ VoteDappError::TokenMintMismatch,
+        constraint = voter_token_account.owner == authority.key()
+    )]
+    pub voter_token_account: Account<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        constraint = treasury_token_account.mint == x_mint.key()
+    )]
+    pub treasury_token_account: Account<'info, TokenAccount>,
+   
+    #[account(
+        mut,
+        seeds =[b"proposal",proposal_id.to_be_bytes().as_ref()],
+        bump
+    )]
+    pub proposal_account: Account<'info, Proposal>,
+
+    pub token_program: Program<'info, Token>,
 }
