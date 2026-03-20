@@ -22,3 +22,28 @@ export interface WinnerItem {
   proposalInfo: string;
   declaredAt: number;
 }
+
+export type StreamEventType =
+  | "ProposalCreated"
+  | "VoteCast"
+  | "WinnerDeclared"
+  | "TokensPurchased"
+  | "TreasuryInitialized"
+  | "ProposalClosed"
+  | "VoterAccountClosed"
+  | "SolWithdrawn";
+
+export interface TimelineEvent {
+  id: string;
+  type: StreamEventType;
+  title: string;
+  detail: string;
+  slot: number;
+  timestamp: number;
+}
+
+export interface VoteRacePoint {
+  name: string;
+  votes: number;
+  share: number;
+}

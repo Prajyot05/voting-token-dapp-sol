@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
-import { Vote, Sparkles } from "lucide-react";
+import { Vote } from "lucide-react";
 import { APP_NAME } from "@/lib/constants";
 
 const links = [

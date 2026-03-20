@@ -1,8 +1,11 @@
 import Link from "next/link";
 import { ArrowRight, Sparkles } from "lucide-react";
 import { AdminActions } from "@/components/features/AdminActions";
+import { EventTimeline } from "@/components/features/EventTimeline";
+import { OnboardingWizard } from "@/components/features/OnboardingWizard";
 import { ProposalActions } from "@/components/features/ProposalActions";
 import { ProtocolStatus } from "@/components/features/ProtocolStatus";
+import { VoteRaceCharts } from "@/components/features/VoteRaceCharts";
 import { VotingActions } from "@/components/features/VotingActions";
 
 export default function Home() {
@@ -42,6 +45,12 @@ export default function Home() {
       </section>
 
       <ProtocolStatus />
+
+      <OnboardingWizard />
+
+      <VoteRaceCharts />
+
+      <EventTimeline />
 
       <div className="grid gap-6">
         <VotingActions />

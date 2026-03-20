@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnchorProvider, BN } from "@coral-xyz/anchor";
 import {
   ASSOCIATED_TOKEN_PROGRAM_ID,
@@ -13,7 +13,7 @@ import { useAnchorWallet, useConnection, useWallet } from "@solana/wallet-adapte
 import toast from "react-hot-toast";
 import { pdaService } from "@/services/pdaService";
 import { getProgram } from "@/services/programService";
-import type { ProposalItem, TreasuryConfig, WinnerItem } from "@/types/voting";
+import type { ProposalItem, TimelineEvent, TreasuryConfig, WinnerItem } from "@/types/voting";
 import { useTxStore } from "@/stores/txStore";
 
 type VoterState = {
@@ -75,9 +75,18 @@ type AccountFetcher = {
   fetch: (address: PublicKey) => Promise<unknown>;
 };
 
+type EventProgramApi = {
+  addEventListener: (
+    eventName: string,
+    callback: (event: unknown, slot: number, signature?: string) => void,
+  ) => Promise<number>;
+  removeEventListener: (listener: number) => Promise<void>;
+};
+
 type DashboardState = {
   loading: boolean;
   isReady: boolean;
+  streamConnected: boolean;
   electionId: bigint;
   proposalCounter: number;
   treasuryConfig: TreasuryConfig | null;
@@ -85,6 +94,7 @@ type DashboardState = {
   winner: WinnerItem | null;
   voter: VoterState | null;
   proposals: ProposalItem[];
+  timeline: TimelineEvent[];
   walletSol: number;
   walletTokens: number;
   vaultSol: number;
@@ -93,6 +103,7 @@ type DashboardState = {
 const initialState: DashboardState = {
   loading: false,
   isReady: false,
+  streamConnected: false,
   electionId: 0n,
   proposalCounter: 0,
   treasuryConfig: null,
@@ -100,6 +111,7 @@ const initialState: DashboardState = {
   winner: null,
   voter: null,
   proposals: [],
+  timeline: [],
   walletSol: 0,
   walletTokens: 0,
   vaultSol: 0,
@@ -115,12 +127,149 @@ async function fetchNullable<T>(fetcher: () => Promise<T>): Promise<T | null> {
   }
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (typeof value === "object" && value !== null) {
+    return value as Record<string, unknown>;
+  }
+  return null;
+}
+
+function numberFromUnknown(value: unknown): number {
+  if (typeof value === "number") return value;
+  if (typeof value === "bigint") return Number(value);
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  const record = asRecord(value);
+  if (record && typeof record.toNumber === "function") {
+    return (record.toNumber as () => number)();
+  }
+  if (record && typeof record.toString === "function") {
+    const parsed = Number((record.toString as () => string)());
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
+}
+
+function pubkeyFromUnknown(value: unknown): string {
+  if (typeof value === "string") return value;
+  const record = asRecord(value);
+  if (record && typeof record.toBase58 === "function") {
+    return (record.toBase58 as () => string)();
+  }
+  if (record && typeof record.toString === "function") {
+    return (record.toString as () => string)();
+  }
+  return "unknown";
+}
+
+function mapEventToTimeline(name: string, payload: unknown, slot: number): TimelineEvent | null {
+  const event = asRecord(payload);
+  if (!event) return null;
+
+  const timestamp = numberFromUnknown(event.timestamp) || Math.floor(Date.now() / 1000);
+  const id = `${name}-${slot}-${timestamp}-${Math.random().toString(36).slice(2, 8)}`;
+
+  if (name === "ProposalCreated") {
+    return {
+      id,
+      type: "ProposalCreated",
+      title: `Proposal #${numberFromUnknown(event.proposalId)} created`,
+      detail: String(event.proposalInfo ?? "New proposal submitted"),
+      slot,
+      timestamp,
+    };
+  }
+
+  if (name === "VoteCast") {
+    return {
+      id,
+      type: "VoteCast",
+      title: `Vote cast on proposal #${numberFromUnknown(event.proposalId)}`,
+      detail: `Voter ${pubkeyFromUnknown(event.voter).slice(0, 8)}... | total votes ${numberFromUnknown(event.totalVotes)}`,
+      slot,
+      timestamp,
+    };
+  }
+
+  if (name === "WinnerDeclared") {
+    return {
+      id,
+      type: "WinnerDeclared",
+      title: `Winner declared: #${numberFromUnknown(event.winningProposalId)}`,
+      detail: `${String(event.proposalInfo ?? "Proposal")} with ${numberFromUnknown(event.totalVotes)} votes`,
+      slot,
+      timestamp,
+    };
+  }
+
+  if (name === "TokensPurchased") {
+    return {
+      id,
+      type: "TokensPurchased",
+      title: "Tokens purchased",
+      detail: `${numberFromUnknown(event.tokensReceived)} tokens for ${numberFromUnknown(event.solPaid)} lamports`,
+      slot,
+      timestamp,
+    };
+  }
+
+  if (name === "TreasuryInitialized") {
+    return {
+      id,
+      type: "TreasuryInitialized",
+      title: "Treasury initialized",
+      detail: `Price ${numberFromUnknown(event.solPrice)} lamports, bundle ${numberFromUnknown(event.tokensPerPurchase)} tokens`,
+      slot,
+      timestamp,
+    };
+  }
+
+  if (name === "ProposalClosed") {
+    return {
+      id,
+      type: "ProposalClosed",
+      title: `Proposal #${numberFromUnknown(event.proposalId)} closed`,
+      detail: `Recovered ${numberFromUnknown(event.rentRecovered)} lamports`,
+      slot,
+      timestamp,
+    };
+  }
+
+  if (name === "VoterAccountClosed") {
+    return {
+      id,
+      type: "VoterAccountClosed",
+      title: "Voter account closed",
+      detail: `Voter ${pubkeyFromUnknown(event.voter).slice(0, 8)}...`,
+      slot,
+      timestamp,
+    };
+  }
+
+  if (name === "SolWithdrawn") {
+    return {
+      id,
+      type: "SolWithdrawn",
+      title: "SOL withdrawn",
+      detail: `${numberFromUnknown(event.amount)} lamports withdrawn`,
+      slot,
+      timestamp,
+    };
+  }
+
+  return null;
+}
+
 export function useVoteDappClient() {
   const { connection } = useConnection();
   const wallet = useWallet();
   const anchorWallet = useAnchorWallet();
   const txStore = useTxStore();
   const [state, setState] = useState<DashboardState>(initialState);
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const program = useMemo(() => {
     if (!anchorWallet) return null;
@@ -175,7 +324,7 @@ export function useVoteDappClient() {
 
   const refresh = useCallback(async () => {
     if (!program) {
-      setState((prev) => ({ ...prev, isReady: false }));
+      setState((prev) => ({ ...prev, isReady: false, streamConnected: false }));
       return;
     }
 
@@ -253,7 +402,8 @@ export function useVoteDappClient() {
       walletTokens = Number(tokenBalance?.value.uiAmount ?? 0);
     }
 
-    setState({
+    setState((prev) => ({
+      ...prev,
       loading: false,
       isReady: true,
       electionId,
@@ -293,12 +443,84 @@ export function useVoteDappClient() {
       walletSol,
       walletTokens,
       vaultSol,
-    });
+    }));
   }, [connection, fetchAccountByName, pdas.electionRound, pdas.proposalCounter, pdas.solVault, pdas.treasuryConfig, pdas.xMint, program, wallet.publicKey]);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  const queueRefreshFromStream = useCallback(() => {
+    if (refreshTimerRef.current) {
+      clearTimeout(refreshTimerRef.current);
+    }
+    refreshTimerRef.current = setTimeout(() => {
+      void refresh();
+    }, 700);
+  }, [refresh]);
+
+  useEffect(() => {
+    if (!program) return;
+
+    const eventProgram = program as unknown as EventProgramApi;
+    const eventNames = [
+      "ProposalCreated",
+      "VoteCast",
+      "WinnerDeclared",
+      "TokensPurchased",
+      "TreasuryInitialized",
+      "ProposalClosed",
+      "VoterAccountClosed",
+      "SolWithdrawn",
+    ];
+
+    let alive = true;
+    const listenerIds: number[] = [];
+
+    const attach = async () => {
+      for (const eventName of eventNames) {
+        try {
+          const id = await eventProgram.addEventListener(
+            eventName,
+            (event: unknown, slot: number) => {
+              if (!alive) return;
+              const timelineItem = mapEventToTimeline(eventName, event, slot);
+              if (!timelineItem) return;
+
+              setState((prev) => ({
+                ...prev,
+                timeline: [timelineItem, ...prev.timeline].slice(0, 80),
+              }));
+
+              queueRefreshFromStream();
+            },
+          );
+
+          listenerIds.push(id);
+        } catch {
+          // Ignore optional listener failures to keep app responsive.
+        }
+      }
+
+      if (alive) {
+        setState((prev) => ({ ...prev, streamConnected: listenerIds.length > 0 }));
+      }
+    };
+
+    void attach();
+
+    return () => {
+      alive = false;
+      setState((prev) => ({ ...prev, streamConnected: false }));
+      for (const id of listenerIds) {
+        void eventProgram.removeEventListener(id);
+      }
+      if (refreshTimerRef.current) {
+        clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = null;
+      }
+    };
+  }, [program, queueRefreshFromStream]);
 
   const runTx = useCallback(
     async (label: string, action: () => Promise<string>) => {
@@ -554,6 +776,74 @@ export function useVoteDappClient() {
     [pdas.solVault, pdas.treasuryConfig, requireWallet, runTx],
   );
 
+  const requestAirdrop = useCallback(
+    async (solAmount: number) => {
+      if (!wallet.publicKey) throw new Error("Connect wallet to use faucet");
+
+      const lamports = Math.max(1, Math.floor(solAmount * LAMPORTS_PER_SOL));
+
+      txStore.setPending("Requesting faucet airdrop...");
+      const signature = await connection.requestAirdrop(wallet.publicKey, lamports);
+      const latestBlockhash = await connection.getLatestBlockhash();
+
+      await connection.confirmTransaction(
+        {
+          signature,
+          blockhash: latestBlockhash.blockhash,
+          lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
+        },
+        "confirmed",
+      );
+
+      txStore.setSuccess("Airdrop successful", signature);
+      toast.success("Airdrop successful");
+      await refresh();
+      return signature;
+    },
+    [connection, refresh, txStore, wallet.publicKey],
+  );
+
+  const runSetupWizard = useCallback(async () => {
+    const { publicKey } = requireWallet();
+
+    const existingTreasury = await fetchNullable<TreasuryConfigAccount>(() =>
+      fetchAccountByName<TreasuryConfigAccount>("treasuryConfig", pdas.treasuryConfig),
+    );
+
+    if (!existingTreasury) {
+      await initializeTreasury(LAMPORTS_PER_SOL, 1_000);
+    }
+
+    const userAta = getAssociatedTokenAddressSync(pdas.xMint, publicKey);
+    const tokenBalance = await fetchNullable(() => connection.getTokenAccountBalance(userAta));
+    const hasTokens = Number(tokenBalance?.value.uiAmount ?? 0) > 0;
+
+    if (!hasTokens) {
+      await purchaseTokens();
+    }
+
+    const existingVoter = await fetchNullable<VoterAccount>(() =>
+      fetchAccountByName<VoterAccount>("voter", pdaService.voter(publicKey)),
+    );
+
+    if (!existingVoter) {
+      await registerVoter();
+    }
+
+    toast.success("Setup wizard completed");
+    await refresh();
+  }, [
+    connection,
+    fetchAccountByName,
+    initializeTreasury,
+    pdas.treasuryConfig,
+    pdas.xMint,
+    purchaseTokens,
+    refresh,
+    registerVoter,
+    requireWallet,
+  ]);
+
   return {
     ...state,
     txStatus: txStore.status,
@@ -570,5 +860,7 @@ export function useVoteDappClient() {
     closeProposal,
     closeVoter,
     withdrawSol,
+    requestAirdrop,
+    runSetupWizard,
   };
 }
