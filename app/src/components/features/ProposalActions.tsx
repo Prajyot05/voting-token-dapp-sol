@@ -1,7 +1,8 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { Flag, Trophy, XCircle } from "lucide-react";
+import toast from "react-hot-toast";
 import { ActionShell } from "@/components/features/ActionShell";
 import { useVoteDappClient } from "@/hooks/useVoteDappClient";
 
@@ -17,7 +18,30 @@ export function ProposalActions() {
     new Date(Date.now() + 5 * 60 * 1000).toISOString().slice(0, 16),
   );
   const [stakeAmount, setStakeAmount] = useState("100");
-  const [proposalId, setProposalId] = useState("1");
+  const [proposalId, setProposalId] = useState("");
+
+  useEffect(() => {
+    if (!dapp.proposals.length) {
+      if (proposalId !== "") {
+        setProposalId("");
+      }
+      return;
+    }
+
+    const exists = dapp.proposals.some((proposal) => String(proposal.proposalId) === proposalId);
+    if (!proposalId || !exists) {
+      setProposalId(String(dapp.proposals[0].proposalId));
+    }
+  }, [dapp.proposals, proposalId]);
+
+  const parseSelectedProposalId = () => {
+    const value = Number(proposalId);
+    if (!Number.isInteger(value) || value <= 0) {
+      toast.error("Select a valid proposal first.");
+      return null;
+    }
+    return value;
+  };
 
   const onCreate = async (event: FormEvent) => {
     event.preventDefault();
@@ -26,12 +50,26 @@ export function ProposalActions() {
 
   const onPickWinner = async (event: FormEvent) => {
     event.preventDefault();
-    await dapp.pickWinner(Number(proposalId));
+    const selectedId = parseSelectedProposalId();
+    if (selectedId === null) return;
+
+    try {
+      await dapp.pickWinner(selectedId);
+    } catch {
+      // Error toast is already handled in the hook.
+    }
   };
 
   const onCloseProposal = async (event: FormEvent) => {
     event.preventDefault();
-    await dapp.closeProposal(Number(proposalId));
+    const selectedId = parseSelectedProposalId();
+    if (selectedId === null) return;
+
+    try {
+      await dapp.closeProposal(selectedId);
+    } catch {
+      // Error toast is already handled in the hook.
+    }
   };
 
   return (
@@ -82,11 +120,21 @@ export function ProposalActions() {
           <h3 className="text-xs font-semibold uppercase tracking-[0.16em] text-neutral-400">Proposal Ops</h3>
           <label className="block text-xs font-medium text-neutral-500">
             Proposal ID
-            <input
+            <select
               value={proposalId}
               onChange={(e) => setProposalId(e.target.value)}
               className="mt-1.5 w-full rounded-lg border border-white/10 bg-black/50 px-3 py-2 text-sm text-white placeholder-neutral-600 outline-none transition-colors focus:border-white/30 focus:ring-1 focus:ring-white/30"
-            />
+            >
+              {!dapp.proposals.length ? (
+                <option value="">No active proposals</option>
+              ) : (
+                dapp.proposals.map((proposal) => (
+                  <option key={proposal.proposalId} value={String(proposal.proposalId)}>
+                    #{proposal.proposalId} - {proposal.proposalInfo}
+                  </option>
+                ))
+              )}
+            </select>
           </label>
           <div className="space-y-2">
             <form onSubmit={(event) => void onPickWinner(event)}>

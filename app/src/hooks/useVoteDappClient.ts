@@ -119,12 +119,60 @@ const initialState: DashboardState = {
 
 const LAMPORTS_PER_SOL = 1_000_000_000;
 
+function getRpcEndpointLabel(connection: {
+  rpcEndpoint?: string;
+  _rpcEndpoint?: string;
+}): string {
+  return connection.rpcEndpoint ?? connection._rpcEndpoint ?? "configured RPC endpoint";
+}
+
+function mapTxErrorToMessage(error: unknown, rpcEndpoint: string): string {
+  const fallback = "Transaction failed";
+  const raw = error instanceof Error ? error.message : fallback;
+  const lower = raw.toLowerCase();
+
+  if (lower.includes("user rejected") || lower.includes("walletsigntransactionerror")) {
+    return "Transaction was cancelled in your wallet.";
+  }
+
+  if (
+    lower.includes("failed to fetch") ||
+    lower.includes("failed to get recent blockhash") ||
+    lower.includes("fetch failed")
+  ) {
+    return `Cannot reach Solana RPC at ${rpcEndpoint}. Start your validator or set NEXT_PUBLIC_RPC_ENDPOINT to a working RPC.`;
+  }
+
+  return raw;
+}
+
 async function fetchNullable<T>(fetcher: () => Promise<T>): Promise<T | null> {
   try {
     return await fetcher();
   } catch {
     return null;
   }
+}
+
+async function fetchWithRetry<T>(
+  fetcher: () => Promise<T>,
+  maxRetries = 3,
+  delayMs = 500,
+  label = ""
+): Promise<T | null> {
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      return await fetcher();
+    } catch (error) {
+      if (i === maxRetries - 1) {
+        console.warn(`[fetchWithRetry${label ? ` ${label}` : ""}] Failed after ${maxRetries} attempts:`, error);
+        return null;
+      }
+      console.debug(`[fetchWithRetry${label ? ` ${label}` : ""}] Attempt ${i + 1} failed, retrying in ${delayMs}ms...`);
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+    }
+  }
+  return null;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -307,14 +355,24 @@ export function useVoteDappClient() {
       if (!walletPk) throw new Error("Wallet not connected");
 
       const ata = getAssociatedTokenAddressSync(mint, owner);
-      const info = await connection.getAccountInfo(ata);
+      let info = await connection.getAccountInfo(ata);
 
       if (!info) {
+        console.log(`[ensureAta] Creating ATA: ${ata.toBase58()}`);
         const tx = new Transaction().add(
           createAssociatedTokenAccountInstruction(walletPk, ata, owner, mint),
         );
         const sig = await wallet.sendTransaction(tx, connection);
-        await connection.confirmTransaction(sig, "confirmed");
+        await connection.confirmTransaction(sig, "finalized");
+        
+        // Verify ATA was created
+        info = await connection.getAccountInfo(ata);
+        if (!info) {
+          throw new Error(`Failed to create ATA: ${ata.toBase58()}`);
+        }
+        console.log(`[ensureAta] ATA created successfully: ${ata.toBase58()}`);
+      } else {
+        console.log(`[ensureAta] ATA already exists: ${ata.toBase58()}`);
       }
 
       return ata;
@@ -330,120 +388,141 @@ export function useVoteDappClient() {
 
     setState((prev) => ({ ...prev, loading: true }));
 
-    const treasuryConfig = await fetchNullable<TreasuryConfigAccount>(() =>
-      fetchAccountByName<TreasuryConfigAccount>("treasuryConfig", pdas.treasuryConfig),
-    );
-    const proposalCounter = await fetchNullable<ProposalCounterAccount>(() =>
-      fetchAccountByName<ProposalCounterAccount>("proposalCounter", pdas.proposalCounter),
-    );
-    const electionRound = await fetchNullable<ElectionRoundAccount>(() =>
-      fetchAccountByName<ElectionRoundAccount>("electionRound", pdas.electionRound),
-    );
-
-    const electionId = electionRound ? BigInt(electionRound.electionId.toString()) : 0n;
-
-    const electionResult =
-      electionId > 0n
-        ? await fetchNullable<ElectionResultAccount>(() =>
-            fetchAccountByName<ElectionResultAccount>(
-              "electionResult",
-              pdaService.electionResult(electionId),
-            ),
-          )
-        : null;
-
-    const winner =
-      electionId > 0n
-        ? await fetchNullable<WinnerAccount>(() =>
-            fetchAccountByName<WinnerAccount>("winner", pdaService.winner(electionId)),
-          )
-        : null;
-
-    const walletPublicKey = wallet.publicKey;
-    const voter =
-      walletPublicKey !== null
-        ? await fetchNullable<VoterAccount>(() =>
-            fetchAccountByName<VoterAccount>("voter", pdaService.voter(walletPublicKey)),
-          )
-        : null;
-
-    const count = proposalCounter ? Number(proposalCounter.proposalCount) : 0;
-    const proposalFetches: Promise<ProposalAccount | null>[] = [];
-
-    for (let id = 1; id < count; id += 1) {
-      proposalFetches.push(
-        fetchNullable<ProposalAccount>(
-          () => fetchAccountByName<ProposalAccount>("proposal", pdaService.proposal(id)),
-        ),
+    try {
+      const treasuryConfig = await fetchNullable<TreasuryConfigAccount>(() =>
+        fetchAccountByName<TreasuryConfigAccount>("treasuryConfig", pdas.treasuryConfig),
       );
-    }
+      const proposalCounter = await fetchNullable<ProposalCounterAccount>(() =>
+        fetchAccountByName<ProposalCounterAccount>("proposalCounter", pdas.proposalCounter),
+      );
+      const electionRound = await fetchNullable<ElectionRoundAccount>(() =>
+        fetchAccountByName<ElectionRoundAccount>("electionRound", pdas.electionRound),
+      );
 
-    const proposalsRaw = await Promise.all(proposalFetches);
-    const proposals: ProposalItem[] = proposalsRaw
-      .filter((item): item is ProposalAccount => item !== null)
-      .map((item) => ({
-        proposalId: item.proposalId,
-        proposalInfo: item.proposalInfo,
-        numberOfVotes: item.numberOfVotes,
-        deadline: Number(item.deadline.toString()),
-        authority: item.authority.toBase58(),
+      const electionId = electionRound ? BigInt(electionRound.electionId.toString()) : 0n;
+
+      const electionResult =
+        electionId > 0n
+          ? await fetchNullable<ElectionResultAccount>(() =>
+              fetchAccountByName<ElectionResultAccount>(
+                "electionResult",
+                pdaService.electionResult(electionId),
+              ),
+            )
+          : null;
+
+      const winner =
+        electionId > 0n
+          ? await fetchNullable<WinnerAccount>(() =>
+              fetchAccountByName<WinnerAccount>("winner", pdaService.winner(electionId)),
+            )
+          : null;
+
+      const walletPublicKey = wallet.publicKey;
+      const voter =
+        walletPublicKey !== null
+          ? await fetchNullable<VoterAccount>(() =>
+              fetchAccountByName<VoterAccount>("voter", pdaService.voter(walletPublicKey)),
+            )
+          : null;
+
+      const count = proposalCounter ? Number(proposalCounter.proposalCount) : 0;
+      const proposalFetches: Promise<ProposalAccount | null>[] = [];
+
+      for (let id = 1; id < count; id += 1) {
+        proposalFetches.push(
+          fetchNullable<ProposalAccount>(
+            () => fetchAccountByName<ProposalAccount>("proposal", pdaService.proposal(id)),
+          ),
+        );
+      }
+
+      const proposalsRaw = await Promise.all(proposalFetches);
+      const proposals: ProposalItem[] = proposalsRaw
+        .filter((item): item is ProposalAccount => item !== null)
+        .map((item) => ({
+          proposalId: item.proposalId,
+          proposalInfo: item.proposalInfo,
+          numberOfVotes: item.numberOfVotes,
+          deadline: Number(item.deadline.toString()),
+          authority: item.authority.toBase58(),
+        }));
+
+      const walletSol = wallet.publicKey
+        ? await fetchNullable(() => connection.getBalance(wallet.publicKey!)).then(
+            (balance) => (balance ?? 0) / LAMPORTS_PER_SOL
+          )
+        : 0;
+
+      const vaultSol = await fetchNullable(() => connection.getBalance(pdas.solVault)).then(
+        (balance) => (balance ?? 0) / LAMPORTS_PER_SOL
+      );
+
+      let walletTokens = 0;
+      if (wallet.publicKey && treasuryConfig) {
+        const userAta = getAssociatedTokenAddressSync(pdas.xMint, wallet.publicKey);
+        const tokenBalance = await fetchWithRetry(
+          () => connection.getTokenAccountBalance(userAta),
+          5,
+          800,
+          `[walletTokens: ${userAta.toBase58().slice(0, 8)}...]`
+        );
+        walletTokens = Number(tokenBalance?.value.uiAmount ?? 0);
+        // console.log(`[useVoteDappClient] Wallet tokens fetched:`, { userAta: userAta.toBase58(), walletTokens, balance: tokenBalance });
+      }
+
+      setState((prev) => ({
+        ...prev,
+        loading: false,
+        isReady: true,
+        electionId,
+        proposalCounter: count,
+        treasuryConfig: treasuryConfig
+          ? {
+              authority: treasuryConfig.authority.toBase58(),
+              xMint: treasuryConfig.xMint.toBase58(),
+              solPrice: BigInt(treasuryConfig.solPrice.toString()),
+              tokensPerPurchase: BigInt(treasuryConfig.tokensPerPurchase.toString()),
+            }
+          : null,
+        electionResult: electionResult
+          ? {
+              electionId: BigInt(electionResult.electionId.toString()),
+              winningProposalId: electionResult.winningProposalId,
+              numberOfVotes: electionResult.numberOfVotes,
+            }
+          : null,
+        winner: winner
+          ? {
+              electionId: BigInt(winner.electionId.toString()),
+              winningProposalId: winner.winningProposalId,
+              numberOfVotes: winner.numberOfVotes,
+              proposalInfo: winner.proposalInfo,
+              declaredAt: Number(winner.declaredAt.toString()),
+            }
+          : null,
+        voter: voter
+          ? {
+              voterId: voter.voterId.toBase58(),
+              currentElectionId: BigInt(voter.currentElectionId.toString()),
+              proposalVoted: voter.proposalVoted,
+            }
+          : null,
+        proposals,
+        walletSol,
+        walletTokens,
+        vaultSol,
       }));
-
-    const walletSol = wallet.publicKey
-      ? (await connection.getBalance(wallet.publicKey)) / LAMPORTS_PER_SOL
-      : 0;
-
-    const vaultSol = (await connection.getBalance(pdas.solVault)) / LAMPORTS_PER_SOL;
-
-    let walletTokens = 0;
-    if (wallet.publicKey && treasuryConfig) {
-      const userAta = getAssociatedTokenAddressSync(pdas.xMint, wallet.publicKey);
-      const tokenBalance = await fetchNullable(() => connection.getTokenAccountBalance(userAta));
-      walletTokens = Number(tokenBalance?.value.uiAmount ?? 0);
+    } catch (error) {
+      if (process.env.NODE_ENV === "development") {
+        console.debug("Error refreshing dashboard state:", error);
+      }
+      setState((prev) => ({
+        ...prev,
+        loading: false,
+        isReady: false,
+      }));
     }
-
-    setState((prev) => ({
-      ...prev,
-      loading: false,
-      isReady: true,
-      electionId,
-      proposalCounter: count,
-      treasuryConfig: treasuryConfig
-        ? {
-            authority: treasuryConfig.authority.toBase58(),
-            xMint: treasuryConfig.xMint.toBase58(),
-            solPrice: BigInt(treasuryConfig.solPrice.toString()),
-            tokensPerPurchase: BigInt(treasuryConfig.tokensPerPurchase.toString()),
-          }
-        : null,
-      electionResult: electionResult
-        ? {
-            electionId: BigInt(electionResult.electionId.toString()),
-            winningProposalId: electionResult.winningProposalId,
-            numberOfVotes: electionResult.numberOfVotes,
-          }
-        : null,
-      winner: winner
-        ? {
-            electionId: BigInt(winner.electionId.toString()),
-            winningProposalId: winner.winningProposalId,
-            numberOfVotes: winner.numberOfVotes,
-            proposalInfo: winner.proposalInfo,
-            declaredAt: Number(winner.declaredAt.toString()),
-          }
-        : null,
-      voter: voter
-        ? {
-            voterId: voter.voterId.toBase58(),
-            currentElectionId: BigInt(voter.currentElectionId.toString()),
-            proposalVoted: voter.proposalVoted,
-          }
-        : null,
-      proposals,
-      walletSol,
-      walletTokens,
-      vaultSol,
-    }));
   }, [connection, fetchAccountByName, pdas.electionRound, pdas.proposalCounter, pdas.solVault, pdas.treasuryConfig, pdas.xMint, program, wallet.publicKey]);
 
   useEffect(() => {
@@ -524,21 +603,36 @@ export function useVoteDappClient() {
 
   const runTx = useCallback(
     async (label: string, action: () => Promise<string>) => {
+      const rpcEndpoint = getRpcEndpointLabel(
+        connection as unknown as { rpcEndpoint?: string; _rpcEndpoint?: string },
+      );
+
       try {
+        await connection.getLatestBlockhash("confirmed");
         txStore.setPending(`${label} in progress...`);
         const sig = await action();
+        console.log(`[runTx] Transaction sent [${label}]: ${sig}`);
+        
+        // Wait for transaction to be finalized on-chain
+        txStore.setPending(`${label}: confirming...`);
+        await connection.confirmTransaction(sig, "finalized");
+        console.log(`[runTx] Transaction finalized [${label}]`);
+        
         txStore.setSuccess(`${label} successful`, sig);
         toast.success(`${label} successful`);
+        
+        // Wait for devnet to propagate state changes (increased for reliability)
+        await new Promise(resolve => setTimeout(resolve, 2000));
         await refresh();
         return sig;
       } catch (error) {
-        const message = error instanceof Error ? error.message : "Transaction failed";
+        const message = mapTxErrorToMessage(error, rpcEndpoint);
         txStore.setError(message);
         toast.error(message);
         throw error;
       }
     },
-    [refresh, txStore],
+    [connection, refresh, txStore],
   );
 
   const requireWallet = useCallback(() => {
@@ -551,6 +645,16 @@ export function useVoteDappClient() {
   const initializeTreasury = useCallback(
     async (solPriceLamports: number, tokensPerPurchase: number) => {
       const { program, publicKey } = requireWallet();
+
+      // Check if treasury already exists
+      const existingTreasury = await fetchNullable<TreasuryConfigAccount>(() =>
+        fetchAccountByName<TreasuryConfigAccount>("treasuryConfig", pdas.treasuryConfig),
+      );
+
+      if (existingTreasury) {
+        throw new Error("Treasury is already initialized. You can only initialize once per network.");
+      }
+
       const treasuryAta = getAssociatedTokenAddressSync(pdas.xMint, publicKey);
 
       return runTx("Initialize Treasury", async () =>
@@ -572,7 +676,7 @@ export function useVoteDappClient() {
           .rpc(),
       );
     },
-    [pdas.electionRound, pdas.mintAuthority, pdas.proposalCounter, pdas.solVault, pdas.treasuryConfig, pdas.xMint, requireWallet, runTx],
+    [fetchAccountByName, pdas.electionRound, pdas.mintAuthority, pdas.proposalCounter, pdas.solVault, pdas.treasuryConfig, pdas.xMint, requireWallet, runTx],
   );
 
   const purchaseTokens = useCallback(async () => {
@@ -606,6 +710,15 @@ export function useVoteDappClient() {
     const { program, publicKey } = requireWallet();
     const voterAccount = pdaService.voter(publicKey);
 
+    // Check if voter already exists
+    const existingVoter = await fetchNullable<VoterAccount>(() =>
+      fetchAccountByName<VoterAccount>("voter", voterAccount),
+    );
+
+    if (existingVoter) {
+      throw new Error("You are already registered as a voter for this election round.");
+    }
+
     return runTx("Register Voter", async () =>
       program.methods
         .registerVoter()
@@ -616,7 +729,7 @@ export function useVoteDappClient() {
         })
         .rpc(),
     );
-  }, [requireWallet, runTx]);
+  }, [fetchAccountByName, requireWallet, runTx]);
 
   const registerProposal = useCallback(
     async (proposalInfo: string, deadlineUnix: number, tokenAmount: number) => {
@@ -707,17 +820,26 @@ export function useVoteDappClient() {
       const proposalAccount = pdaService.proposal(proposalId);
 
       return runTx("Pick Winner", async () =>
-        program.methods
-          .pickWinner(proposalId)
-          .accounts({
-            authority: publicKey,
-            electionRoundAccount: pdas.electionRound,
-            winnerAccount,
-            electionResultAccount,
-            proposalAccount,
-            systemProgram: SystemProgram.programId,
-          })
-          .rpc(),
+        {
+          const existingProposal = await fetchNullable<ProposalAccount>(() =>
+            fetchAccountByName<ProposalAccount>("proposal", proposalAccount),
+          );
+          if (!existingProposal) {
+            throw new Error(`Proposal #${proposalId} does not exist or is already closed.`);
+          }
+
+          return program.methods
+            .pickWinner(proposalId)
+            .accounts({
+              authority: publicKey,
+              electionRoundAccount: pdas.electionRound,
+              winnerAccount,
+              electionResultAccount,
+              proposalAccount,
+              systemProgram: SystemProgram.programId,
+            })
+            .rpc();
+        },
       );
     },
     [fetchAccountByName, pdas.electionRound, requireWallet, runTx],
@@ -729,22 +851,41 @@ export function useVoteDappClient() {
       const proposalAccount = pdaService.proposal(proposalId);
 
       return runTx("Close Proposal", async () =>
-        program.methods
-          .closeProposal(proposalId)
-          .accounts({
-            proposalAccount,
-            destination: publicKey,
-            authority: publicKey,
-          })
-          .rpc(),
+        {
+          const existingProposal = await fetchNullable<ProposalAccount>(() =>
+            fetchAccountByName<ProposalAccount>("proposal", proposalAccount),
+          );
+
+          if (!existingProposal) {
+            throw new Error(`Proposal #${proposalId} does not exist or is already closed.`);
+          }
+
+          return program.methods
+            .closeProposal(proposalId)
+            .accounts({
+              proposalAccount,
+              destination: publicKey,
+              authority: publicKey,
+            })
+            .rpc();
+        },
       );
     },
-    [requireWallet, runTx],
+    [fetchAccountByName, requireWallet, runTx],
   );
 
   const closeVoter = useCallback(async () => {
     const { program, publicKey } = requireWallet();
     const voterAccount = pdaService.voter(publicKey);
+
+    // Check if voter exists before trying to close
+    const existingVoter = await fetchNullable<VoterAccount>(() =>
+      fetchAccountByName<VoterAccount>("voter", voterAccount),
+    );
+
+    if (!existingVoter) {
+      throw new Error("You are not registered as a voter. Register first to close your account later.");
+    }
 
     return runTx("Close Voter Account", async () =>
       program.methods
@@ -755,7 +896,7 @@ export function useVoteDappClient() {
         })
         .rpc(),
     );
-  }, [requireWallet, runTx]);
+  }, [fetchAccountByName, requireWallet, runTx]);
 
   const withdrawSol = useCallback(
     async (amountLamports: number) => {
@@ -776,33 +917,6 @@ export function useVoteDappClient() {
     [pdas.solVault, pdas.treasuryConfig, requireWallet, runTx],
   );
 
-  const requestAirdrop = useCallback(
-    async (solAmount: number) => {
-      if (!wallet.publicKey) throw new Error("Connect wallet to use faucet");
-
-      const lamports = Math.max(1, Math.floor(solAmount * LAMPORTS_PER_SOL));
-
-      txStore.setPending("Requesting faucet airdrop...");
-      const signature = await connection.requestAirdrop(wallet.publicKey, lamports);
-      const latestBlockhash = await connection.getLatestBlockhash();
-
-      await connection.confirmTransaction(
-        {
-          signature,
-          blockhash: latestBlockhash.blockhash,
-          lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
-        },
-        "confirmed",
-      );
-
-      txStore.setSuccess("Airdrop successful", signature);
-      toast.success("Airdrop successful");
-      await refresh();
-      return signature;
-    },
-    [connection, refresh, txStore, wallet.publicKey],
-  );
-
   const runSetupWizard = useCallback(async () => {
     const { publicKey } = requireWallet();
 
@@ -815,7 +929,12 @@ export function useVoteDappClient() {
     }
 
     const userAta = getAssociatedTokenAddressSync(pdas.xMint, publicKey);
-    const tokenBalance = await fetchNullable(() => connection.getTokenAccountBalance(userAta));
+    const tokenBalance = await fetchWithRetry(
+      () => connection.getTokenAccountBalance(userAta),
+      5,
+      800,
+      "[setupWizard]"
+    );
     const hasTokens = Number(tokenBalance?.value.uiAmount ?? 0) > 0;
 
     if (!hasTokens) {
@@ -860,7 +979,6 @@ export function useVoteDappClient() {
     closeProposal,
     closeVoter,
     withdrawSol,
-    requestAirdrop,
     runSetupWizard,
   };
 }

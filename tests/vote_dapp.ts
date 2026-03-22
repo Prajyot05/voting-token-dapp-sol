@@ -26,17 +26,21 @@ const findPDA = (programId: anchor.web3.PublicKey, seeds: (Buffer | Uint8Array)[
   return pda;
 };
 
-const airDropSol = async (connection: anchor.web3.Connection, publicKey: anchor.web3.PublicKey, amount: number) => {
-  const signature = await connection.requestAirdrop(publicKey, amount);
-
-  const latestBlockHash = await connection.getLatestBlockhash();
-
-  await connection.confirmTransaction({
-    blockhash: latestBlockHash.blockhash,
-    lastValidBlockHeight: latestBlockHash.lastValidBlockHeight,
-    signature: signature,
+const fundWallet = async (
+  connection: anchor.web3.Connection,
+  from: anchor.web3.Keypair,
+  to: anchor.web3.PublicKey,
+  amount: number,
+) => {
+  const transferIx = anchor.web3.SystemProgram.transfer({
+    fromPubkey: from.publicKey,
+    toPubkey: to,
+    lamports: amount,
   });
-}
+
+  const tx = new anchor.web3.Transaction().add(transferIx);
+  await anchor.web3.sendAndConfirmTransaction(connection, tx, [from]);
+};
 
 const getBlockTime = async (connection: anchor.web3.Connection): Promise<number> => {
   const slot = await connection.getSlot();
@@ -95,12 +99,12 @@ describe("vote_dapp", () => {
     electionResultPDA = findPDA(program.programId, [Buffer.from(SEEDS.ELECTION_RESULT), Buffer.from(new anchor.BN(ELECTION_ID).toArray("le", 8))]);
     winnerPDA = findPDA(program.programId, [Buffer.from(SEEDS.WINNER), Buffer.from(new anchor.BN(ELECTION_ID).toArray("le", 8))]);
 
-    console.log("Airdropping SOL...");
+    console.log("Funding wallets...");
     await Promise.all([
-      airDropSol(connection, proposalCreatorWallet.publicKey, 10 * anchor.web3.LAMPORTS_PER_SOL),
-      airDropSol(connection, voterWallet.publicKey, 10 * anchor.web3.LAMPORTS_PER_SOL),
+      fundWallet(connection, adminWallet, proposalCreatorWallet.publicKey, 10 * anchor.web3.LAMPORTS_PER_SOL),
+      fundWallet(connection, adminWallet, voterWallet.publicKey, 10 * anchor.web3.LAMPORTS_PER_SOL),
     ]);
-    console.log("Airdrop completed.");
+    console.log("Funding completed.");
   });
 
   const createTokenAccounts = async () => {

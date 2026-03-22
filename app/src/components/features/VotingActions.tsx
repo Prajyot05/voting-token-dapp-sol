@@ -8,11 +8,10 @@ import { useVoteDappClient } from "@/hooks/useVoteDappClient";
 export function VotingActions() {
   const dapp = useVoteDappClient();
   const [proposalId, setProposalId] = useState("1");
-  const [voteTokens, setVoteTokens] = useState("100");
 
   const onVote = async (event: FormEvent) => {
     event.preventDefault();
-    await dapp.voteProposal(Number(proposalId), Number(voteTokens));
+    await dapp.voteProposal(Number(proposalId), 1);
   };
 
   return (
@@ -40,7 +39,7 @@ export function VotingActions() {
 
       <form onSubmit={(event) => void onVote(event)} className="space-y-4 rounded-xl border border-white/10 bg-[#0a0a0a] p-5">
         <h3 className="text-xs font-semibold uppercase tracking-[0.16em] text-neutral-400">Cast Vote</h3>
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid gap-4">
           <label className="text-xs font-medium text-neutral-500">
             Proposal ID
             <input
@@ -49,15 +48,8 @@ export function VotingActions() {
               className="mt-1.5 w-full rounded-lg border border-white/10 bg-black/50 px-3 py-2 text-sm text-white placeholder-neutral-600 outline-none transition-colors focus:border-white/30 focus:ring-1 focus:ring-white/30"
             />
           </label>
-          <label className="text-xs font-medium text-neutral-500">
-            Token amount
-            <input
-              value={voteTokens}
-              onChange={(e) => setVoteTokens(e.target.value)}
-              className="mt-1.5 w-full rounded-lg border border-white/10 bg-black/50 px-3 py-2 text-sm text-white placeholder-neutral-600 outline-none transition-colors focus:border-white/30 focus:ring-1 focus:ring-white/30"
-            />
-          </label>
         </div>
+        <p className="text-xs text-neutral-500">Each vote uses a fixed cost of 1 token.</p>
         <button className="rounded-lg bg-white px-5 py-2.5 text-sm font-medium text-black transition-colors hover:bg-neutral-200">
           Submit Vote
         </button>

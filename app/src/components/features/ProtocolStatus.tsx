@@ -5,14 +5,26 @@ import { ActionShell } from "@/components/features/ActionShell";
 import { shortKey } from "@/lib/utils";
 import { useVoteDappClient } from "@/hooks/useVoteDappClient";
 
+// Token mint uses 6 decimals, so keep fixed precision visible in telemetry.
+function formatTokens(value: number): string {
+  return value.toLocaleString("en-US", {
+    minimumFractionDigits: 6,
+    maximumFractionDigits: 6,
+  });
+}
+
 export function ProtocolStatus() {
   const data = useVoteDappClient();
 
   const cards = [
     { label: "Wallet SOL", value: data.walletSol.toFixed(3) },
-    { label: "Wallet Tokens", value: data.walletTokens.toFixed(2) },
+    { label: "Wallet Tokens", value: formatTokens(data.walletTokens) },
     { label: "Vault SOL", value: data.vaultSol.toFixed(3) },
     { label: "Election ID", value: data.electionId.toString() },
+    ...(data.treasuryConfig ? [
+      { label: "SOL Price", value: (Number(data.treasuryConfig.solPrice) / 1_000_000_000).toFixed(3) },
+      { label: "Tokens Per Bundle", value: Number(data.treasuryConfig.tokensPerPurchase).toLocaleString() },
+    ] : []),
   ];
 
   return (

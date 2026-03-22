@@ -1,9 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
 import { Vote } from "lucide-react";
 import { APP_NAME } from "@/lib/constants";
+import { WalletButton } from "./WalletButton";
 
 const links = [
   { href: "/", label: "Dashboard" },
@@ -34,7 +34,7 @@ export function Navbar() {
           ))}
         </nav>
 
-        <WalletMultiButton className="!h-9 !rounded-full !border !border-white/10 !bg-white/5 !px-5 !text-sm !font-medium !text-white hover:!bg-white/10 transition-colors" />
+        <WalletButton />
       </div>
     </header>
   );
